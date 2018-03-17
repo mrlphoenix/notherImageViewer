@@ -1,0 +1,6 @@
+<RCC>
+    <qresource prefix="/">
+        <file>slideshow.qml</file>
+        <file>icon.png</file>
+    </qresource>
+</RCC>
