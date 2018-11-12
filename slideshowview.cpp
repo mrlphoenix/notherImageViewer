@@ -15,6 +15,11 @@
 #include <QPixmap>
 #include <QApplication>
 #include <QClipboard>
+#include <QMultiHash>
+#include <QDataStream>
+#include <QBuffer>
+#include <QCryptographicHash>
+
 SlideShowView::SlideShowView(QObject *parent) : QObject(parent)
 {
     isFullScreen = 0;
@@ -25,6 +30,8 @@ SlideShowView::SlideShowView(QObject *parent) : QObject(parent)
     if (cfg.move())
         view->setPosition(cfg.left, cfg.top);
     view->resize(cfg.width, cfg.height);
+    if (cfg.fullscreen)
+        isFullScreen = 1;
     view->setIcon(QIcon(":/icon.png"));
     view->show();
     if (cfg.fullscreen)
@@ -36,11 +43,15 @@ SlideShowView::SlideShowView(QObject *parent) : QObject(parent)
         QObject::connect(object,SIGNAL(nextItem()), this, SLOT(nextItem()));
         QObject::connect(object,SIGNAL(prevItem()), this, SLOT(prevItem()));
         QObject::connect(object,SIGNAL(randomItem()), this, SLOT(randomItem()));
+        QObject::connect(object,SIGNAL(prevMW()), this, SLOT(prevMW()));
+        QObject::connect(object,SIGNAL(nextMW()), this, SLOT(nextMW()));
+        QObject::connect(object,SIGNAL(loadMW()), this, SLOT(loadMW()));
 
         QObject::connect(object,SIGNAL(nextRItem()), this, SLOT(nextRItem()));
         QObject::connect(object,SIGNAL(prevRItem()), this, SLOT(prevRItem()));
         QObject::connect(object, SIGNAL(toggleFullScreen()), this, SLOT(toggleFullScreen()));
         QObject::connect(object, SIGNAL(copy()), this, SLOT(copyToClipboard()));
+        QObject::connect(object, SIGNAL(itemShown(QString)), this, SLOT(itemShown(QString)));
     });
     qsrand(QDateTime::currentDateTime().time().msecsSinceStartOfDay());
     int c = qrand()%120000;
@@ -50,6 +61,8 @@ SlideShowView::SlideShowView(QObject *parent) : QObject(parent)
     QTimer *t = new QTimer();
     connect(t, &QTimer::timeout, this, &SlideShowView::saveData);
     t->start(5000);
+
+    connect(qApp, SIGNAL(aboutToQuit()), this, SLOT(aboutToQuit()));
 }
 
 int SlideShowView::randInt()
@@ -64,6 +77,7 @@ int SlideShowView::randInt()
 void SlideShowView::findAllItems(QString filename)
 {
     qDebug() << "FindAllItems" << filename;
+    QString dbName = QFileInfo(QString(filename).replace("file:///","")).canonicalPath() + "/niv.db";
     currentItems.clear();
     randomItems.clear();
     nameToIndex.clear();
@@ -71,11 +85,32 @@ void SlideShowView::findAllItems(QString filename)
     randomItemIndex = -1;
     QString absPath = QFileInfo(filename.replace("file:///", "").replace("\\","/")).absolutePath();
     qDebug() << absPath;
+    if (absPath.isEmpty())
+        return;
+    bool hasDb = false;
+    if (QFileInfo::exists(dbName)) {
+        db = PicDatabase::load(dbName);
+        qDebug() << "HAS DB";
+        hasDb = true;
+        qDebug() << db.urlToHash.count();
+        db.outFileName = dbName;
+    }
+
     QDirIterator it(absPath, QStringList() << "*.jpg"<<  "*.png" << "*.jpeg" << "*.gif", QDir::Files, QDirIterator::Subdirectories);
+    int i = 0;
     while (it.hasNext())
     {
-        currentItems << "file:///" + it.next();
-        nameToIndex[currentItems.last()] = currentItems.count() - 1;
+        QString itNext = it.next();
+        currentItems << "file:///" + itNext;
+        QString item = currentItems.last();
+        nameToIndex[item] = currentItems.count() - 1;
+        if (!hasDb || !db.urlToHash.contains(item))
+            appendToDB(itNext, item);
+        i++;
+        if (i % 50 == 0) {
+            showText(item);
+            qApp->processEvents();
+        }
     }
     QVector<QString> tempList(currentItems);
     while (!tempList.isEmpty())
@@ -83,8 +118,18 @@ void SlideShowView::findAllItems(QString filename)
         int index = randInt()%tempList.count();
         randomItems.append(tempList[index]);
         tempList.removeAt(index);
+        i++;
+        if (i % 50 == 0) {
+        showText(currentItems.last());
+        qApp->processEvents();
+        }
     }
     currentItemIndex = nameToIndex["file:///"+filename];
+    if (!hasDb)
+    {
+        db.outFileName = dbName;
+        db.saveToFile(dbName);
+    }
 }
 
 void SlideShowView::showCurrentItem()
@@ -98,8 +143,15 @@ void SlideShowView::showCurrentItem()
     }
 }
 
+void SlideShowView::showText(QString text)
+{
+    QObject *object = dynamic_cast<QObject*>(view->rootObject());
+    QMetaObject::invokeMethod(object, "makeText", Q_ARG(QVariant, QVariant(text)));
+}
+
 void SlideShowView::nextItem()
 {
+    qDebug() << "ni";
     if (currentItems.count())
     {
         currentItemIndex++;
@@ -114,6 +166,8 @@ void SlideShowView::nextItem()
 
 void SlideShowView::prevItem()
 {
+
+    qDebug() << "pi";
     if (currentItems.count())
     {
         currentItemIndex--;
@@ -144,6 +198,8 @@ void SlideShowView::randomItem()
 
 void SlideShowView::nextRItem()
 {
+
+    qDebug() << "ri";
     if (randomItems.count())
     {
         randomItemIndex++;
@@ -159,6 +215,8 @@ void SlideShowView::nextRItem()
 
 void SlideShowView::prevRItem()
 {
+
+    qDebug() << "pri";
     if (randomItems.count())
     {
         randomItemIndex--;
@@ -169,6 +227,43 @@ void SlideShowView::prevRItem()
         QMetaObject::invokeMethod(object,"showItem", Q_ARG(QVariant, QVariant(randomItems[randomItemIndex])));
         lastShown = randomItems[randomItemIndex];
     }
+}
+
+void SlideShowView::nextMW()
+{
+    qDebug() << "nw";
+    if (mwItems.count())
+    {
+        mwItemIndex++;
+        if (mwItemIndex >= mwItems.count())
+            mwItemIndex = 0;
+        currentItemIndex = nameToIndex[mwItems[mwItemIndex]];
+        QObject *object = dynamic_cast<QObject*>(view->rootObject());
+        QMetaObject::invokeMethod(object,"showItem", Q_ARG(QVariant, QVariant(mwItems[mwItemIndex])));
+        lastShown = mwItems[mwItemIndex];
+    }
+}
+
+void SlideShowView::prevMW()
+{
+
+    qDebug() << "pw";
+    if (mwItems.count())
+    {
+        mwItemIndex--;
+        if (mwItemIndex < 0)
+            mwItemIndex = mwItems.count() - 1;
+        currentItemIndex = nameToIndex[mwItems[mwItemIndex]];
+        QObject *object = dynamic_cast<QObject*>(view->rootObject());
+        QMetaObject::invokeMethod(object,"showItem", Q_ARG(QVariant, QVariant(mwItems[mwItemIndex])));
+        lastShown = mwItems[mwItemIndex];
+    }
+}
+
+void SlideShowView::loadMW()
+{
+    mwItems = db.sortedByWatchTime();
+    mwItemIndex = 0;
 }
 
 void SlideShowView::toggleFullScreen()
@@ -227,12 +322,97 @@ void SlideShowView::copyToClipboard()
     QApplication::clipboard()->setPixmap(pm);
 }
 
+void SlideShowView::appendToDB(QString filename, QString url)
+{
+    QFile f(filename);
+    QByteArray data;
+    QByteArray preview;
+    QString hashText;
+    if (f.open(QFile::ReadOnly)) {
+        data = f.readAll();
+        QCryptographicHash hash(QCryptographicHash::Md5);
+        hash.addData(data);
+        hashText = hash.result().toHex();
+        f.close();
+    }
+    if (QFileInfo(filename).suffix().toLower() == "png")
+    {
+        QImage img = QImage::fromData(data,"PNG");
+        QImage small = img.scaled(128, 128 ,Qt::KeepAspectRatio);
+        QBuffer buffer(&preview);
+        buffer.open(QIODevice::WriteOnly);
+        small.save(&buffer, "PNG");
+    }
+    db.urlToHash[url] = hashText;
+    db.hashToUrl[hashText] = url;
+    db.watchedCount[hashText] = 0;
+    db.watchedTime[hashText] = 0.0;
+    db.preview[hashText] = preview;
+}
 
+void SlideShowView::itemShown(QString item)
+{
+    static QString prevItem;
+    if (!prevItem.isEmpty()) {
+        db.watchedTime[db.urlToHash[prevItem]] = db.watchedTime[db.urlToHash[prevItem]] + double(elapsed.elapsed())/1000.;
+        qDebug() << "item watched time " << prevItem <<db.watchedTime[db.urlToHash[prevItem]];
+    }
+    elapsed.restart();
+    prevItem = item;
+    QString hash = db.urlToHash[item];
+    db.watchedCount[hash] = db.watchedCount[hash] + 1;
+    qDebug() << "item watched count " << item << db.watchedCount[hash];
+}
 
+void SlideShowView::aboutToQuit()
+{
+    if (!db.outFileName.isEmpty()) {
+        db.saveToFile(db.outFileName);
+    }
+}
 
+void SlideShowView::PicDatabase::saveToFile(QString filename)
+{
+    QByteArray out;
+    QDataStream ds(&out, QIODevice::WriteOnly);
+    ds << urlToHash << hashToUrl << watchedCount << watchedTime << preview;
+    out = qCompress(out);
+    QFile f(filename);
+    if (f.open(QFile::WriteOnly)){
+        f.write(out);
+        f.flush();
+        f.close();
+    }
+}
 
+SlideShowView::PicDatabase SlideShowView::PicDatabase::load(QString filename)
+{
+    QFile f(filename);
+    PicDatabase r;
+    if (f.open(QFile::ReadOnly)){
+        QByteArray in = qUncompress(f.readAll());
+        QDataStream ds(&in, QIODevice::ReadOnly);
+        ds >> r.urlToHash >> r.hashToUrl >> r.watchedCount >> r.watchedTime >> r.preview;
+    }
+    return r;
+}
 
+QVector<QString> SlideShowView::PicDatabase::sortedByWatchTime()
+{
+    QList<WatchSortedItem> result;
+    foreach (const QString &k, watchedTime.keys()) {
+        WatchSortedItem item;
+        item.url = hashToUrl[k];
+        item.time = watchedTime[k];
+        result.append(item);
+    }
 
+    qSort(result.begin(), result.end(), [](const SlideShowView::PicDatabase::WatchSortedItem &a,
+          const SlideShowView::PicDatabase::WatchSortedItem &b) -> bool { return a.time > b.time;});
+    QVector<QString> res;
+    foreach (const auto &i, result)
+        res.append(i.url);
 
-
-
+    qDebug() << "MW ITEM: " << result.first().url << " " << result.first().time;
+    return res;
+}

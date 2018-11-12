@@ -9,28 +9,46 @@ Item {
     signal prevItem()
     signal nextRItem()
     signal prevRItem()
+    signal nextMW()
+    signal prevMW()
+    signal loadMW()
+
     signal randomItem()
+
+
     signal setDir(string dir)
     signal toggleFullScreen()
     signal copy()
+    signal itemShown(string item)
 
     property bool randomMode: false
+    property bool mwMode: false
     function showItem(url)
     {
         img.source = url
+        fileInfo.text = url
+        itemShown(url)
+    }
+
+    function makeText(url)
+    {
         fileInfo.text = url
     }
 
     function next()
     {
-        if (randomMode)
+        if (mwMode)
+            nextMW()
+        else if (randomMode)
             nextRItem()
         else
             nextItem()
     }
     function prev()
     {
-        if (randomMode)
+        if (mwMode)
+            prevMW()
+        else if (randomMode)
             prevRItem()
         else
             prevItem()
@@ -42,10 +60,11 @@ Item {
         folder: shortcuts.pictures
         selectFolder: true
         onAccepted: {
+            console.log('fd on accepted');
             img.source = fileDialog.fileUrl
             if (selectFolder)
             {
-                setDir(fileDialog.fileUrl.toString() + "/file.bin")
+                setDir(fileDialog.fileUrl.toString() + "/niv.db")
                 next()
                 prev()
             }
@@ -58,8 +77,6 @@ Item {
             toggleFullScreen()
         }
         nameFilters: [ "Image files (*.jpg *.png)" ]
-        Component.onCompleted: {visible = true;
-            fileDialog.close()}
     }
 
     Rectangle {
@@ -150,10 +167,15 @@ Item {
         prev()
     }
     Keys.onReturnPressed: {
+        console.log('return pressed')
+        fileDialog.visible = true
         fileDialog.open()
     }
     Keys.onTabPressed:{
-        randomMode = !randomMode
+        if (!mwMode) {
+            loadMW()
+        }
+        mwMode = !mwMode
     }
 
     Keys.onPressed: {
@@ -204,5 +226,15 @@ Item {
         repeat: true
         interval: 5000
         onTriggered: next()
+    }
+    Timer {
+        interval: 500
+        id: focTimer
+        repeat: false
+        running: true
+        onTriggered: {
+            root.focus = true;
+        }
+
     }
 }

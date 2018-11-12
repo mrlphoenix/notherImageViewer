@@ -12,13 +12,16 @@ int main(int argc, char *argv[])
         qDebug() << argv[i];
     }
     SlideShowView v;
+
     if (argc > 1)
     {
         QString file = argv[1];
+        if (file.simplified().length()) {
         QTimer::singleShot(500, [&v, file](){
             v.findAllItems("file:///" + file);
             v.showCurrentItem();
         });
+        }
     }
 
     return a.exec();
